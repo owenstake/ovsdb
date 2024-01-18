@@ -20,16 +20,16 @@ package ovsdb
 // from keys based on packet headers and metadata to sets of actions.
 // Importantly, a datapath is a userspace concept.
 type OvsPmd struct {
-	NumaId   int
-	CoreId   int
+	Numa     int
+	Core     int
 	Isolated bool
-	usage    float64
+	Usage    float64
 }
 
 type OvsRxq struct {
-	port    int
-	queue   int
-	enabled bool
-	core    int
-	usage   float64
+	Port    string
+	Queue   int
+	Enabled bool
+	Core    int
+	Usage   float64
 }

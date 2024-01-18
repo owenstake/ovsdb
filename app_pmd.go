@@ -16,6 +16,7 @@ package ovsdb
 
 import (
 	"fmt"
+
 	//"github.com/davecgh/go-spew/spew"
 	"strconv"
 	"strings"
@@ -33,7 +34,6 @@ func getRxqPmdUsage(db string, sock string, timeout int) ([]*OvsPmd, []*OvsRxq, 
 	cmd := "dpif-netdev/pmd-rxq-show"
 	pmds := []*OvsPmd{}
 	rxqs := []*OvsRxq{}
-
 	app, err = NewClient(sock, timeout)
 	if err != nil {
 		app.Close()
@@ -60,91 +60,99 @@ func getRxqPmdUsage(db string, sock string, timeout int) ([]*OvsPmd, []*OvsRxq, 
 		return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output depth analysis", cmd, db)
 	}
 	// Second, analyze the output
-	var dpn string
-	var dp *OvsDatapath
 	for _, line := range lines {
 		indent := indentAnalysis(line)
-		line = strings.TrimSpace(line)
+		// line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		switch depth[indent] {
 		case 0:
-			// Datapath
-			if dp != nil {
-				dps = append(dps, dp)
-			}
-			dp = &OvsDatapath{}
+			pmd := &OvsPmd{}
 			i := strings.Index(line, ":")
-			dpn = line[:i]
-			dp.Name = dpn
-		case 1, 2:
-			if dp == nil {
-				continue
+			lineArray := strings.Split(strings.Join(strings.Fields(line[:i]), " "), " ")
+
+			if len(lineArray) != 6 {
+				return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage in ouput line %s. line: 1", cmd, db, line)
 			}
-			// Counters and Interfaces
-			i := strings.Index(line, ":")
-			prefix := line[:i]
-			switch prefix {
-			case "lookups":
-				for _, lookupAttrKv := range strings.Split(line[i+2:], " ") {
-					kv := strings.Split(lookupAttrKv, ":")
-					if len(kv) != 2 {
-						continue
-					}
-					k := kv[0]
-					v, err := strconv.ParseFloat(kv[1], 64)
-					if err != nil {
-						continue
-					}
-					switch k {
-					case "hit":
-						dp.Lookups.Hit = v
-					case "missed":
-						dp.Lookups.Missed = v
-					case "lost":
-						dp.Lookups.Lost = v
-					default:
-						return dps, fmt.Errorf("the '%s' command return for %s failed output analysis: datapath lookup counters", cmd, db)
-					}
+
+			// pmd thread info
+			if lineArray[0] != "pmd" || lineArray[1] != "thread" {
+				return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage in ouput line %s. line: 2", cmd, db, line)
+			}
+
+			// get numa id
+			if lineArray[2] == "numa_id" {
+				if value, err := strconv.Atoi(lineArray[3]); err == nil {
+					pmd.Numa = value
 				}
-			case "flows":
-				if v, err := strconv.ParseFloat(strings.TrimSpace(line[i+2:]), 64); err == nil {
-					dp.Flows = v
+			} else {
+				return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage in ouput line %s. line: 3", cmd, db, line)
+			}
+
+			// get core id
+			if lineArray[4] == "core_id" {
+				if value, err := strconv.Atoi(lineArray[5]); err == nil {
+					pmd.Core = value
 				}
-			case "masks":
-				for _, lookupAttrKv := range strings.Split(line[i+2:], " ") {
-					kv := strings.Split(lookupAttrKv, ":")
-					if len(kv) != 2 {
-						continue
-					}
-					k := kv[0]
-					v, err := strconv.ParseFloat(kv[1], 64)
-					if err != nil {
-						continue
-					}
-					switch k {
-					case "hit":
-						dp.Masks.Hit = v
-					case "total":
-						dp.Masks.Total = v
-					case "hit/pkt":
-						dp.Masks.HitRatio = v
-					default:
-						return dps, fmt.Errorf("the '%s' command return for %s failed output analysis: datapath masks counters", cmd, db)
-					}
+			} else {
+				return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage in ouput line %s", cmd, db, line)
+			}
+			if pmd != nil {
+				pmds = append(pmds, pmd)
+			}
+		case 1:
+			cur_pmd := pmds[len(pmds)-1]
+			lineArray := strings.Split(strings.Join(strings.Fields(line), " "), " ")
+			rxq := &OvsRxq{}
+			switch lineArray[0] {
+			case "isolated":
+				if lineArray[2] == "true" {
+					cur_pmd.Isolated = true
+				} else if lineArray[2] == "false" {
+					cur_pmd.Isolated = false
+				} else {
+					return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage in ouput line %s. flag1", cmd, db, line)
 				}
+			case "port:":
+				rxq.Port = lineArray[1]
+
+				if lineArray[2] == "queue-id:" {
+					if value, err := strconv.Atoi(lineArray[3]); err == nil {
+						rxq.Queue = value
+					} else {
+						return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage in ouput line %s. flag2", cmd, db, line)
+					}
+				} else {
+					return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage in ouput line %s. flag3", cmd, db, line)
+				}
+
+				if lineArray[4] == "(enabled)" {
+					rxq.Enabled = true
+				} else if lineArray[4] == "(disabled)" {
+					rxq.Enabled = false
+				} else {
+					return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage in ouput line %s. flag4", cmd, db, line)
+				}
+				if lineArray[5] == "pmd" && lineArray[6] == "usage:" {
+					if value, err := strconv.ParseFloat(lineArray[7], 64); err == nil {
+						rxq.Usage = value
+					} else {
+						return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage in ouput line %s. flag5", cmd, db, line)
+					}
+				} else {
+					return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage in ouput line %s. array=%v flag6", cmd, db, line, lineArray)
+				}
+				rxq.Core = cur_pmd.Core
+				rxqs = append(rxqs, rxq)
 			default:
-				// do nothing
+				return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis: rxq pmd usage", cmd, db)
 			}
 		default:
-			return dps, fmt.Errorf("the '%s' command return for %s failed output analysis", cmd, db)
+			return pmds, rxqs, fmt.Errorf("the '%s' command return for %s failed output analysis. indent %d", cmd, db, indent)
 		}
 	}
-	if dp != nil {
-		dps = append(dps, dp)
-	}
-	return dps, nil
+	return pmds, rxqs, nil
 
 }
 
